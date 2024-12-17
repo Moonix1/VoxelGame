@@ -1,5 +1,6 @@
 use std::{process::exit, sync::Arc};
 
+use wgpu::util::DeviceExt;
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
@@ -11,6 +12,36 @@ use winit::{
 
 use log::{error, warn};
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct Vertex {
+    position: [f32 ; 3],
+    color: [f32 ; 3],
+}
+
+impl Vertex {
+    const ATTRIBS: [wgpu::VertexAttribute ; 2]
+        = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3];
+
+    fn desc() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &Self::ATTRIBS,
+        }
+    }
+}
+
+const VERTICES: &[Vertex] = &[
+    Vertex { position: [0.0, 0.5, 0.0],   color: [1.0, 0.0, 0.0] },
+    Vertex { position: [-0.5, -0.5, 0.0], color: [0.0, 1.0, 0.0] },
+    Vertex { position: [0.5, -0.5, 0.0],  color: [0.0, 0.0, 1.0] },
+];
+
+const INDICES: &[u16] = &[
+    0, 1, 2,
+];
+
 struct App<'a> {
     surface: Option<wgpu::Surface<'a>>,
     device: Option<wgpu::Device>,
@@ -19,6 +50,12 @@ struct App<'a> {
     size: Option<PhysicalSize<u32>>,
 
     render_pipeline: Option<wgpu::RenderPipeline>,
+
+    vertex_buffer: Option<wgpu::Buffer>,
+    num_vertices: Option<u32>,
+
+    index_buffer: Option<wgpu::Buffer>,
+    num_indices: Option<u32>,
 
     window: Option<Arc<Window>>,
 }
@@ -33,6 +70,12 @@ impl<'a> App<'a> {
             size:               None,
 
             render_pipeline:    None,
+
+            vertex_buffer:      None,
+            num_vertices:       None,
+
+            index_buffer:       None,
+            num_indices:        None,
 
             window:             None,
         }
@@ -102,7 +145,14 @@ impl<'a> App<'a> {
             });
 
             render_pass.set_pipeline(&self.render_pipeline.as_ref().unwrap());
-            render_pass.draw(0..3, 0..1);
+            render_pass.set_vertex_buffer(0, 
+                self.vertex_buffer.as_ref().unwrap().slice(..)
+            );
+            render_pass.set_index_buffer(
+                self.index_buffer.as_ref().unwrap().slice(..),
+                wgpu::IndexFormat::Uint16,
+            );
+            render_pass.draw_indexed(0..self.num_indices.unwrap(), 0, 0..1);
         }
 
         self.queue.as_ref().unwrap().submit(std::iter::once(encoder.finish()));
@@ -183,7 +233,9 @@ impl<'a> ApplicationHandler for App<'a> {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
-                buffers: &[],
+                buffers: &[
+                    Vertex::desc(),
+                ],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -214,12 +266,34 @@ impl<'a> ApplicationHandler for App<'a> {
             multiview: None,
             cache: None,
         });
-        
+
+        let vertex_buffer = device.create_buffer_init(
+            &wgpu::util::BufferInitDescriptor {
+                label: Some("Vertex Buffer"),
+                contents: bytemuck::cast_slice(VERTICES),
+                usage: wgpu::BufferUsages::VERTEX,
+            }
+        );
+        let num_vertices = VERTICES.len() as u32;
+
+        let index_buffer = device.create_buffer_init(
+            &wgpu::util::BufferInitDescriptor {
+                label: Some("Index Buffer"),
+                contents: bytemuck::cast_slice(INDICES),
+                usage: wgpu::BufferUsages::INDEX,
+            }
+        );
+        let num_indices = INDICES.len() as u32;
+
         self.surface            = Some(surface);
         self.device             = Some(device);
         self.queue              = Some(queue);
         self.config             = Some(config);
         self.render_pipeline    = Some(render_pipeline);
+        self.vertex_buffer      = Some(vertex_buffer);
+        self.num_vertices       = Some(num_vertices);
+        self.index_buffer       = Some(index_buffer);
+        self.num_indices        = Some(num_indices);
         self.window             = Some(window);
     }
 
