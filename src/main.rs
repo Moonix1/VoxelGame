@@ -12,16 +12,18 @@ use winit::{
 
 use log::{error, warn};
 
+mod texture;
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct Vertex {
     position: [f32 ; 3],
-    color: [f32 ; 3],
+    tex_coords: [f32 ; 2],
 }
 
 impl Vertex {
     const ATTRIBS: [wgpu::VertexAttribute ; 2]
-        = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3];
+        = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2];
 
     fn desc() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexBufferLayout {
@@ -33,10 +35,10 @@ impl Vertex {
 }
 
 const VERTICES: &[Vertex] = &[
-    Vertex { position: [0.0, 0.5, 0.0],    color: [1.0, 0.0, 0.0] },
-    Vertex { position: [-0.5, 0.5, 0.0],   color: [0.0, 1.0, 0.0] },
-    Vertex { position: [-0.5, -0.5, 0.0],  color: [0.0, 0.0, 1.0] },
-    Vertex { position: [0.0, -0.5, 0.0],   color: [0.0, 0.0, 0.0] },
+    Vertex { position: [0.0, 0.5, 0.0],    tex_coords: [1.0, 0.0] },
+    Vertex { position: [-0.5, 0.5, 0.0],   tex_coords: [0.0, 0.0] },
+    Vertex { position: [-0.5, -0.5, 0.0],  tex_coords: [0.0, 1.0] },
+    Vertex { position: [0.0, -0.5, 0.0],   tex_coords: [1.0, 1.0] },
 ];
 
 const INDICES: &[u16] = &[
@@ -59,6 +61,9 @@ struct App<'a> {
     index_buffer: Option<wgpu::Buffer>,
     num_indices: Option<u32>,
 
+    diffuse_bind_group: Option<wgpu::BindGroup>,
+    diffuse_texture: Option<texture::Texture>,
+
     window: Option<Arc<Window>>,
 }
 
@@ -78,6 +83,9 @@ impl<'a> App<'a> {
 
             index_buffer:       None,
             num_indices:        None,
+
+            diffuse_bind_group: None,
+            diffuse_texture:    None,
 
             window:             None,
         }
@@ -147,6 +155,7 @@ impl<'a> App<'a> {
             });
 
             render_pass.set_pipeline(&self.render_pipeline.as_ref().unwrap());
+            render_pass.set_bind_group(0, self.diffuse_bind_group.as_ref().unwrap(), &[]);
             render_pass.set_vertex_buffer(0, 
                 self.vertex_buffer.as_ref().unwrap().slice(..)
             );
@@ -222,10 +231,60 @@ impl<'a> ApplicationHandler for App<'a> {
 
         let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
 
+        let diffuse_bytes = include_bytes!("../assets/happy-tree.png");
+        let diffuse_texture = texture::Texture::from_bytes(
+            &device,
+            &queue,
+            diffuse_bytes,
+            "happy-tree.png"
+        ).unwrap();
+
+        let texture_bind_group_layout
+            = device.create_bind_group_layout(
+                &wgpu::BindGroupLayoutDescriptor {
+                    entries: &[
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Texture {
+                                multisampled: false,
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                            count: None,
+                        },
+                    ],
+                    label: Some("texture_bind_group_layout"),
+                }
+            );
+
+        let diffuse_bind_group = device.create_bind_group(
+            &wgpu::BindGroupDescriptor {
+                layout: &texture_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&diffuse_texture.view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&diffuse_texture.sampler),
+                    }
+                ],
+                label: Some("diffuse_bind_group"),
+            }
+        );
+
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[],
+                bind_group_layouts: &[&texture_bind_group_layout],
                 push_constant_ranges: &[],
             });
 
@@ -296,6 +355,8 @@ impl<'a> ApplicationHandler for App<'a> {
         self.num_vertices       = Some(num_vertices);
         self.index_buffer       = Some(index_buffer);
         self.num_indices        = Some(num_indices);
+        self.diffuse_bind_group = Some(diffuse_bind_group);
+        self.diffuse_texture    = Some(diffuse_texture);
         self.window             = Some(window);
     }
 
