@@ -1,18 +1,18 @@
-use std::{process::exit, sync::Arc};
+use std::{process::exit};
 
 use wgpu::util::DeviceExt;
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
     event::{ElementState, KeyEvent, WindowEvent},
-    event_loop::EventLoop,
+    event_loop::{ActiveEventLoop, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
-    window::Window
 };
 
 use log::{error, warn};
 
 mod texture;
+mod window;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -46,12 +46,12 @@ const INDICES: &[u16] = &[
     2, 3, 0,
 ];
 
+#[allow(unused)]
 struct App<'a> {
     surface: Option<wgpu::Surface<'a>>,
     device: Option<wgpu::Device>,
     queue: Option<wgpu::Queue>,
     config: Option<wgpu::SurfaceConfiguration>,
-    size: Option<PhysicalSize<u32>>,
 
     render_pipeline: Option<wgpu::RenderPipeline>,
 
@@ -64,7 +64,7 @@ struct App<'a> {
     diffuse_bind_group: Option<wgpu::BindGroup>,
     diffuse_texture: Option<texture::Texture>,
 
-    window: Option<Arc<Window>>,
+    window: Option<window::Window<'a>>,
 }
 
 impl<'a> App<'a> {
@@ -74,7 +74,6 @@ impl<'a> App<'a> {
             device:             None,
             queue:              None,
             config:             None,
-            size:               None,
 
             render_pipeline:    None,
 
@@ -99,7 +98,7 @@ impl<'a> App<'a> {
 
     fn resize(&mut self, new_size: PhysicalSize<u32>) {
         if new_size.width > 0 && new_size.height > 0 {
-            self.size = Some(new_size);
+            self.window.as_mut().unwrap().size = new_size;
             
             if let Some(config) = &mut self.config {
                 config.width = new_size.width;
@@ -174,17 +173,19 @@ impl<'a> App<'a> {
 }
 
 impl<'a> ApplicationHandler for App<'a> {
-    fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-        let window = Arc::new(event_loop.create_window(Window::default_attributes()).unwrap());
-        
-        self.size = Some(window.inner_size());
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        let window = window::Window::build(
+            "Voxel Game",
+            PhysicalSize { width: 720, height: 600 },
+            event_loop,
+        );
         
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::GL,
             ..Default::default()
         });
         
-        let surface = instance.create_surface(window.clone()).unwrap();
+        let surface = instance.create_surface(window.core_window.clone()).unwrap();
 
         let adapter = pollster::block_on(
             async {
@@ -221,8 +222,8 @@ impl<'a> ApplicationHandler for App<'a> {
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: surface_format,
-            width: self.size.unwrap().width,
-            height: self.size.unwrap().height,
+            width: window.size.width,
+            height: window.size.height,
             present_mode: surface_caps.present_modes[0],
             alpha_mode: surface_caps.alpha_modes[0],
             view_formats: vec![],
@@ -367,7 +368,7 @@ impl<'a> ApplicationHandler for App<'a> {
             event: winit::event::WindowEvent,
         ) {
         match event {
-            _ if window_id == self.window.as_ref().unwrap().id() => if !self.input(&event) {
+            _ if window_id == self.window.as_ref().unwrap().core_window.id() => if !self.input(&event) {
                 match event {
                     WindowEvent::CloseRequested | WindowEvent::KeyboardInput {
                         event:
@@ -386,7 +387,7 @@ impl<'a> ApplicationHandler for App<'a> {
                     },
         
                     WindowEvent::RedrawRequested => {
-                        self.window.as_ref().unwrap().request_redraw();
+                        self.window.as_ref().unwrap().core_window.request_redraw();
         
                         self.update();
                         match self.render() {
@@ -394,7 +395,7 @@ impl<'a> ApplicationHandler for App<'a> {
         
                             Err(
                                 wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated,
-                            ) => self.resize(self.size.unwrap()),
+                            ) => self.resize(self.window.as_ref().unwrap().size),
         
                             Err(wgpu::SurfaceError::OutOfMemory) => {
                                 error!("Out of memory!");
