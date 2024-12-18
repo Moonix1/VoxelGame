@@ -11,8 +11,9 @@ use winit::{
 
 use log::{error, warn};
 
-mod texture;
 mod window;
+mod camera;
+mod texture;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -35,15 +36,56 @@ impl Vertex {
 }
 
 const VERTICES: &[Vertex] = &[
+    // Front
     Vertex { position: [0.0, 0.5, 0.0],    tex_coords: [1.0, 0.0] },
     Vertex { position: [-0.5, 0.5, 0.0],   tex_coords: [0.0, 0.0] },
     Vertex { position: [-0.5, -0.5, 0.0],  tex_coords: [0.0, 1.0] },
     Vertex { position: [0.0, -0.5, 0.0],   tex_coords: [1.0, 1.0] },
+
+    // Right
+    Vertex { position: [0.0, 0.5, -0.5],    tex_coords: [1.0, 0.0] },
+    Vertex { position: [0.0, 0.5, 0.0],   tex_coords: [0.0, 0.0] },
+    Vertex { position: [0.0, -0.5, 0.0],  tex_coords: [0.0, 1.0] },
+    Vertex { position: [0.0, -0.5, -0.5],   tex_coords: [1.0, 1.0] },
+
+    // Back
+    Vertex { position: [0.0, -0.5, -0.5],    tex_coords: [1.0, 1.0] },
+    Vertex { position: [-0.5, -0.5, -0.5],   tex_coords: [0.0, 1.0] },
+    Vertex { position: [-0.5, 0.5, -0.5],  tex_coords: [0.0, 0.0] },
+    Vertex { position: [0.0, 0.5, -0.5],   tex_coords: [1.0, 0.0] },
+
+    // Left
+    Vertex { position: [-0.5, 0.5, 0.0],    tex_coords: [1.0, 0.0] },
+    Vertex { position: [-0.5, 0.5, -0.5],   tex_coords: [0.0, 0.0] },
+    Vertex { position: [-0.5, -0.5, -0.5],  tex_coords: [0.0, 1.0] },
+    Vertex { position: [-0.5, -0.5, 0.0],   tex_coords: [1.0, 1.0] },
+
+    // Top
+    Vertex { position: [0.0, 0.5, 0.0],    tex_coords: [1.0, 0.0] },
+    Vertex { position: [0.0, 0.5, -0.5],   tex_coords: [0.0, 0.0] },
+    Vertex { position: [-0.5, 0.5, -0.5],  tex_coords: [0.0, 1.0] },
+    Vertex { position: [-0.5, 0.5, 0.0],   tex_coords: [1.0, 1.0] },
+
+    // Bottom
+    Vertex { position: [0.0, -0.5, 0.0],    tex_coords: [1.0, 0.0] },
+    Vertex { position: [-0.5, -0.5, 0.0],   tex_coords: [0.0, 0.0] },
+    Vertex { position: [-0.5, -0.5, -0.5],  tex_coords: [0.0, 1.0] },
+    Vertex { position: [0.0, -0.5, -0.5],   tex_coords: [1.0, 1.0] },
 ];
 
 const INDICES: &[u16] = &[
     0, 1, 2,
     2, 3, 0,
+    4, 5, 6,
+    6, 7, 4,
+    8, 9, 10,
+    10, 11, 8,
+    12, 13, 14,
+    14, 15, 12,
+    16, 17, 18,
+    18, 19, 16,
+    20, 21, 22,
+    22, 23, 20,
 ];
 
 #[allow(unused)]
@@ -54,6 +96,13 @@ struct App<'a> {
     config: Option<wgpu::SurfaceConfiguration>,
 
     render_pipeline: Option<wgpu::RenderPipeline>,
+
+    camera: Option<camera::Camera>,
+    camera_uniform: Option<camera::CameraUniform>,
+    camera_buffer: Option<wgpu::Buffer>,
+    camera_bind_group: Option<wgpu::BindGroup>,
+
+    camera_controller: Option<camera::CameraController>,
 
     vertex_buffer: Option<wgpu::Buffer>,
     num_vertices: Option<u32>,
@@ -76,6 +125,13 @@ impl<'a> App<'a> {
             config:             None,
 
             render_pipeline:    None,
+            
+            camera:             None,
+            camera_uniform:     None,
+            camera_buffer:      None,
+            camera_bind_group:  None,
+
+            camera_controller:  None,
 
             vertex_buffer:      None,
             num_vertices:       None,
@@ -91,9 +147,7 @@ impl<'a> App<'a> {
     }
     
     fn input(&mut self, event: &WindowEvent) -> bool {
-        match event {
-            _ => false
-        }
+        self.camera_controller.as_mut().unwrap().process_events(event)
     }
 
     fn resize(&mut self, new_size: PhysicalSize<u32>) {
@@ -115,7 +169,13 @@ impl<'a> App<'a> {
     }
 
     fn update(&mut self) {
-
+        self.camera_controller.as_ref().unwrap().update_camera(self.camera.as_mut().unwrap());
+        self.camera_uniform.as_mut().unwrap().update_view_proj(self.camera.as_ref().unwrap());
+        self.queue.as_ref().unwrap().write_buffer(
+            self.camera_buffer.as_ref().unwrap(),
+            0,
+            bytemuck::cast_slice(&[self.camera_uniform.unwrap()]),
+        );
     }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -155,6 +215,7 @@ impl<'a> App<'a> {
 
             render_pass.set_pipeline(&self.render_pipeline.as_ref().unwrap());
             render_pass.set_bind_group(0, self.diffuse_bind_group.as_ref().unwrap(), &[]);
+            render_pass.set_bind_group(1, self.camera_bind_group.as_ref().unwrap(), &[]);
             render_pass.set_vertex_buffer(0, 
                 self.vertex_buffer.as_ref().unwrap().slice(..)
             );
@@ -282,10 +343,67 @@ impl<'a> ApplicationHandler for App<'a> {
             }
         );
 
+        let camera = camera::Camera {
+            eye: (0.0, 1.0, 1.3).into(),
+            target: (0.0, 0.0, 0.0).into(),
+            up: cgmath::Vector3::unit_y(),
+            aspect: config.width as f32 / config.height as f32,
+            fov: 70.0,
+            near: 0.1,
+            far: 1000.0,
+        };
+
+        let mut camera_uniform = camera::CameraUniform::new();
+        camera_uniform.update_view_proj(&camera);
+
+        let camera_buffer = device.create_buffer_init(
+            &wgpu::util::BufferInitDescriptor {
+                label: Some("Camera Buffer"),
+                contents: bytemuck::cast_slice(&[camera_uniform]),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            }
+        );
+
+        let camera_bind_group_layout = device.create_bind_group_layout(
+            &wgpu::BindGroupLayoutDescriptor {
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    }
+                ],
+                label: Some("camera_bind_group_layout"),
+            }
+        );
+
+        let camera_bind_group = device.create_bind_group(
+            &wgpu::BindGroupDescriptor {
+                layout: &camera_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: camera_buffer.as_entire_binding(),
+                    }
+                ],
+                label: Some("camera_bind_group"),
+            }
+        );
+
+        let camera_controller = camera::CameraController::new(0.2);
+
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[&texture_bind_group_layout],
+                bind_group_layouts: &[
+                    &texture_bind_group_layout,
+                    &camera_bind_group_layout,
+                ],
                 push_constant_ranges: &[],
             });
 
@@ -352,6 +470,11 @@ impl<'a> ApplicationHandler for App<'a> {
         self.queue              = Some(queue);
         self.config             = Some(config);
         self.render_pipeline    = Some(render_pipeline);
+        self.camera             = Some(camera);
+        self.camera_uniform     = Some(camera_uniform);
+        self.camera_buffer      = Some(camera_buffer);
+        self.camera_bind_group  = Some(camera_bind_group);
+        self.camera_controller  = Some(camera_controller);
         self.vertex_buffer      = Some(vertex_buffer);
         self.num_vertices       = Some(num_vertices);
         self.index_buffer       = Some(index_buffer);
